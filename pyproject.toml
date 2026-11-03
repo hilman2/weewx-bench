@@ -1,0 +1,46 @@
+[project]
+name = "weewx-bench"
+version = "0.1.0"
+description = "Compare the report generation time of WeeWX versions on the same data"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Manuel Hilgert", email = "hilman2@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = ["configobj>=5.0.9"]
+
+[project.scripts]
+weewx-bench = "weewx_bench.cli:main"
+
+[dependency-groups]
+dev = ["mypy>=1.13", "pytest>=8.3", "ruff>=0.8"]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM"]
+# %-formatting, as in WeeWX. A try with a commented except reads better than suppress().
+ignore = ["UP031", "SIM105"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.mypy]
+files = ["src", "tests"]
+strict = true
+
+[[tool.mypy.overrides]]
+# WeeWX is not installed in the environment of weewx-bench; it lives in the venvs
+# that weewx-bench creates. The same holds for PyMySQL.
+module = ["weewx.*", "weedb", "weedb.*", "pymysql.*", "configobj"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["weewx_bench.inside.*"]
+disallow_any_generics = false
+disallow_untyped_calls = false

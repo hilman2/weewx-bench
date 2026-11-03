@@ -1,0 +1,36 @@
+# MariaDB for `weewx-bench run --backend mysql`.
+#
+# The stations reach MariaDB through toxiproxy, which adds the latency given with
+# --latency-ms. weewx-bench generates the data set on the direct port and sets up
+# the proxy over its API. The ports are in src/weewx_bench/dataset.py as well.
+#
+#   docker compose up -d --wait     start
+#   docker compose down -v          stop and delete the data
+
+name: weewx-bench
+
+services:
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: weewx-bench
+    ports:
+      - "127.0.0.1:33060:3306"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      retries: 30
+
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.12.0
+    ports:
+      - "127.0.0.1:8474:8474"
+      - "127.0.0.1:33061:3307"
+    depends_on:
+      mariadb:
+        condition: service_healthy
+
+volumes:
+  mariadb-data:

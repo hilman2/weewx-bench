@@ -1,0 +1,10 @@
+# Every benchmarked WeeWX installation gets exactly these versions of its
+# dependencies, so that a difference in the results comes from WeeWX alone.
+# Pillow 13 needs Python 3.11 or later, which is why --python cannot go lower.
+configobj==5.0.9
+ct3==3.4.0.post5
+ephem==4.2.1
+pillow==13.0.0
+pymysql==1.2.3
+pyserial==3.5
+pyusb==1.3.1
