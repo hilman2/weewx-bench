@@ -22,6 +22,10 @@ from typing import Any
 import weewx_bench.dataset
 import weewx_bench.installs
 
+# How Seasons shows the uptime of the server and of WeeWX. Both change from one run to
+# the next, by the minute.
+UPTIME_PATTERN = re.compile(rb'\d+ days?, \d+ hours?, \d+ minutes?')
+
 GENERATED_PATTERN = re.compile(
     r'Generated (\d+) (files|images) for report (\S+) in ([\d.]+) seconds'
 )
@@ -171,9 +175,10 @@ def differing_files(
 ) -> list[str]:
     """Return the files in HTML_ROOT that differ between two installations.
 
-    Pages name the WeeWX version they were made with. The version numbers are
-    replaced before the files are compared. A file that exists on one side only counts as
-    differing. An empty list means both versions produced the same report.
+    Pages name the WeeWX version they were made with, and the uptime of the server
+    and of WeeWX. Both are replaced before the files are compared. A file that exists
+    on one side only counts as differing. An empty list means both versions produced
+    the same report.
     """
     # The skins name a version too, e.g. "Seasons 5.5.2". With the skins of the
     # baseline, that is the baseline's version on both sides. So both version
@@ -187,7 +192,7 @@ def differing_files(
         content = path.read_bytes()
         for version in versions:
             content = content.replace(version, b'VERSION')
-        return content
+        return UPTIME_PATTERN.sub(b'UPTIME', content)
 
     def names(install: weewx_bench.installs.Install) -> set[str]:
         return {

@@ -17,6 +17,11 @@ auch nicht für das Format der Ergebnisdateien. Regeln siehe globale CLAUDE.md.
   Ohne Latenz ca. 1,5 min. Mit Latenz wächst die Dauer mit der Zahl der Abfragen
   (5.5.2: ca. 26.000 pro Lauf). Danach `just mysql-down`.
 - Kurzer Probelauf: `--days 30 --runs 1 --warmup 0`
+- macOS: `ssh mac` (kein uv, kein Docker dort). uv nur vorübergehend nach
+  `/tmp/weewx-bench-test/bin` installieren (`UV_INSTALL_DIR`, `UV_NO_MODIFY_PATH=1`),
+  `UV_CACHE_DIR`, `UV_PYTHON_INSTALL_DIR`, `UV_TOOL_DIR` ebenfalls dorthin, dann
+  `uvx --refresh --from git+https://github.com/hilman2/weewx-bench ...`. Danach
+  das Verzeichnis löschen. Am 03.11.2026 dort mit 0.2.0 grün gelaufen.
 
 ## Struktur
 - `src/weewx_bench/cli.py`: Kommandos `run` und `show`, Ergebnisdatei

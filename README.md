@@ -9,13 +9,13 @@ gives all of them the same database, and runs `weectl report run` for each.
 The result is a table like this one:
 
 ```
-weewx-bench 0.1.0: SeasonsReport, SQLite, 730 days of 5-minute records
+weewx-bench 0.2.0: SeasonsReport, SQLite, 730 days of 5-minute records
 Linux-7.0.0-38-generic-x86_64-with-glibc2.43, AMD Ryzen AI 9 HX 470 w/ Radeon 890M (24 threads), Python 3.12.15
 Median of 5 runs after 1 warm-up run(s). Skins of 5.5.2.
 
 Version  Wall time  Change   Min-max    Generators  CPU     Memory  SELECT  Statements
-5.5.2    1.09 s     +0.0 %   1.07-1.09  0.97 s      1.08 s  45 MB   25850   25854
-5.6.0b1  0.93 s     -14.7 %  0.89-0.95  0.81 s      0.93 s  45 MB   13583   13587
+5.5.2    1.09 s     +0.0 %   1.07-1.11  0.96 s      1.09 s  46 MB   25850   25854
+5.6.0b1  0.90 s     -16.9 %  0.90-0.92  0.79 s      0.90 s  46 MB   13583   13587
 
 Output of 5.6.0b1: identical to 5.5.2, apart from the version number.
 ```
@@ -117,8 +117,8 @@ If the minimum and maximum of two versions overlap, the difference is within
 the noise of your machine. Close other programs and use more `--runs`.
 
 Below the table, weewx-bench compares the files each version wrote into
-`HTML_ROOT` with those of the baseline. "Identical" means both versions did
-the same work. If files differ, the time comparison may not be fair, and the
+`HTML_ROOT` with those of the baseline, ignoring the version numbers and the
+uptimes on the pages. "Identical" means both versions did the same work. If files differ, the time comparison may not be fair, and the
 files are under `.bench/stations` for a look.
 
 The result file in `results` holds every single run, the installed packages,
@@ -132,7 +132,10 @@ Every version gets its own station, created by its own
 `weectl station create`, with the Simulator as driver. All stations read the
 same database: archive records every five minutes, up to 30 June 2026 12:00
 UTC, with daily summaries. Every value is computed from its timestamp, so the
-database is the same on every machine. The first version you name writes it.
+archive records are the same on every machine. The daily summaries for wind
+can differ in the last digit between Linux and macOS, because WeeWX computes
+the wind vectors with the sine and cosine of the operating system. The first
+version you name writes the database.
 
 Reports are generated for that last timestamp, with `TZ=UTC`. Before each run,
 weewx-bench deletes `HTML_ROOT`. Otherwise the image generator would skip plots
