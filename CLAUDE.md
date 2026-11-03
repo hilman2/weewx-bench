@@ -11,9 +11,10 @@ auch nicht für das Format der Ergebnisdateien. Regeln siehe globale CLAUDE.md.
 
 ## Befehle
 - Schnell: `just fast` (ruff, ruff format, mypy strict, pytest; unter 1 s)
-- Vergleich: `uv run weewx-bench check 5.5.2 5.6.0b1` (730 Tage über die Treiber,
-  beide Profile, sieben Reports). Die Dauer bestimmt das Einlesen über
-  ecowittcustom.
+- Vergleich: `uv run weewx-bench check 5.5.2 5.6.0b1` (730 Tage direkt, die letzten
+  7 über die Treiber, beide Profile, sieben Reports): ca. 2,5 min, erster Lauf
+  ca. 3 min. Nicht mehr als ein paar Tage über die Treiber schicken: zwei Jahre
+  dauerten 22 min, und das war ausdrücklich nicht gewollt.
 - Zeitmessung SQLite: `uv run weewx-bench run 5.5.2 5.6.0b1` (ca. 1 min)
 - MariaDB: `just mysql-up`, dann `--backend mysql [--latency-ms N]`. Mit Latenz
   wächst die Dauer mit der Zahl der Abfragen (5.5.2: ca. 26.000 pro Seasons-Lauf,
@@ -36,9 +37,10 @@ auch nicht für das Format der Ergebnisdateien. Regeln siehe globale CLAUDE.md.
 - `src/weewx_bench/dataset.py`: Profile `davis` (US) und `ecowitt` (METRICWX),
   Ende 30.06.2026 12:00 UTC, SQLite-Datei oder MariaDB, toxiproxy für Latenz.
   Nur `run` nutzt diese direkt geschriebenen Datensätze.
-- `src/weewx_bench/ingest.py`: `check` liest die Daten über echte Treiber ein,
-  jede Version in ihre eigene Datenbank unter `.bench/stations/<Profil>/<Version>`,
-  alle Stationen parallel. `vantage.py` spielt eine Vantage-Konsole über TCP
+- `src/weewx_bench/ingest.py`: `check` gibt jeder Station eine Kopie des Verlaufs
+  ohne die letzten Tage (`--driver-days`, Standard 7) und lässt `weewxd` diese Tage
+  über echte Treiber nachholen, jede Version in ihre eigene Datenbank unter
+  `.bench/stations/<Profil>/<Version>`, alle Stationen parallel. `vantage.py` spielt eine Vantage-Konsole über TCP
   (Nachholen per DMPAFT), `ecowitt.py` ein Ecowitt-Gateway, das per HTTP an
   ecowittcustom 0.3.0 schickt.
 - `src/weewx_bench/measure.py`: Referenzlauf (Uhr eingefroren, Statements

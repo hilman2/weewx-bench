@@ -44,19 +44,29 @@ TOXIPROXY_URL = 'http://127.0.0.1:8474'
 class DataSet:
     """Archive records every INTERVAL seconds, for the given number of days up to STOP_TS.
 
-    profile names the station the records imitate, one of PROFILES.
+    profile names the station the records imitate, one of PROFILES. With
+    left_out, the data set ends that many days before STOP_TS. check gives a driver
+    those last days to read.
     """
 
     days: int
     profile: str = 'davis'
+    left_out: int = 0
 
     @property
     def start_ts(self) -> int:
         return STOP_TS - self.days * DAY
 
     @property
+    def stop_ts(self) -> int:
+        return STOP_TS - self.left_out * DAY
+
+    @property
     def name(self) -> str:
-        return 'weewx_bench_v%d_%s_%dd' % (DATA_SET_VERSION, self.profile, self.days)
+        name = 'weewx_bench_v%d_%s_%dd' % (DATA_SET_VERSION, self.profile, self.days)
+        if self.left_out:
+            name += '_without_last_%dd' % self.left_out
+        return name
 
     def describe(self) -> dict[str, int | str]:
         return {
@@ -64,7 +74,7 @@ class DataSet:
             'days': self.days,
             'interval': INTERVAL,
             'start_ts': self.start_ts,
-            'stop_ts': STOP_TS,
+            'stop_ts': self.stop_ts,
         }
 
 
@@ -81,7 +91,7 @@ def _generate(
                 json.dumps(database_dict),
                 data_set.profile,
                 str(data_set.start_ts),
-                str(STOP_TS),
+                str(data_set.stop_ts),
                 str(INTERVAL),
             ],
             check=True,

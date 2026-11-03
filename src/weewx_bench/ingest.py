@@ -3,19 +3,20 @@
 #
 #    See the file LICENSE for your full rights.
 #
-"""Fill a station's database through a real driver and weewxd.
+"""Bring a station's database up to date through a real driver and weewxd.
 
-Each WeeWX version reads the data set through its own driver and engine: StdConvert,
+The station starts with the data set, written directly, minus its last days. Each
+WeeWX version reads those days through its own driver and engine: StdConvert,
 StdQC, StdWXCalculate with its xtypes, StdArchive with the daily summaries. Two
 versions that handle the same readings differently end up with different databases,
 and check compares them.
 
 davis: the Vantage driver of WeeWX reads a Vantage console of weewx-bench over TCP,
-in one catch-up at startup.
+in one catch-up at startup, from the last record in the database on.
 
 ecowitt: the ecowittcustom driver receives the uploads of an Ecowitt gateway of
-weewx-bench over HTTP. The clock of weewxd starts at the beginning of the data set,
-and the timestamps of the uploads move the archive periods on from there.
+weewx-bench over HTTP. The clock of weewxd starts at the last record in the
+database, and the timestamps of the uploads move the archive periods on from there.
 """
 
 from __future__ import annotations
@@ -113,18 +114,21 @@ def _wait_for_port(port: int, process: subprocess.Popen[bytes]) -> None:
 
 def ingest(
     target: weewx_bench.installs.Install,
-    data_set: weewx_bench.dataset.DataSet,
+    history: weewx_bench.dataset.DataSet,
+    history_file: pathlib.Path,
     work_dir: pathlib.Path,
 ) -> dict[str, Any]:
-    """Create a fresh station for target and fill its database through the driver.
+    """Create a fresh station for target and let the driver bring it up to date.
 
-    Returns what happened: the seconds it took, whether the database is complete, the
-    exit code of weewxd and the errors in its log. The log is in the station
-    directory, as weewxd.log.
+    The station starts with a copy of history_file, the data set history written
+    directly. The driver delivers what comes after it, up to STOP_TS. Returns what
+    happened: the seconds it took, whether the database is complete, the exit code of
+    weewxd and the errors in its log. The log is in the station directory, as
+    weewxd.log.
     """
-    weewx_bench.installs.create_station(target, weewx_bench.dataset.SQLITE_DATABASE, None)
+    weewx_bench.installs.create_station(target, weewx_bench.dataset.SQLITE_DATABASE, history_file)
     database = target.station / 'archive' / weewx_bench.dataset.SQLITE_DATABASE.database_name
-    start_ts, stop_ts = data_set.start_ts, weewx_bench.dataset.STOP_TS
+    start_ts, stop_ts = history.stop_ts, weewx_bench.dataset.STOP_TS
     environment = dict(
         os.environ, TZ='UTC', LANG='C.UTF-8', LC_ALL='C.UTF-8', WEEWX_BENCH_NOSYNC='1'
     )
@@ -133,7 +137,7 @@ def ingest(
 
     console = None
     gateway = None
-    if data_set.profile == 'davis':
+    if history.profile == 'davis':
         console = weewx_bench.vantage.Console(
             list(weewx_bench.vantage.archive_records(start_ts, stop_ts))
         )
@@ -154,7 +158,7 @@ def ingest(
         )
         port = _free_port()
         environment['WEEWX_BENCH_CLOCK'] = str(start_ts)
-    _configure(target, data_set.profile, port)
+    _configure(target, history.profile, port)
 
     log_path = target.station / 'weewxd.log'
     start = time.monotonic()
@@ -169,7 +173,7 @@ def ingest(
             start_new_session=True,
         )
         try:
-            if data_set.profile == 'ecowitt':
+            if history.profile == 'ecowitt':
                 _wait_for_port(port, process)
                 # One upload past the end: the archive period of the last one closes
                 # only when a later upload arrives.

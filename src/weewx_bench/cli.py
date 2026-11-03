@@ -133,6 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
         'Default is all of them.' % reports,
     )
     check.add_argument(
+        '--driver-days',
+        type=int,
+        default=7,
+        help='The last days of the data set, which the drivers deliver to weewxd. '
+        'The days before are written directly. Default is 7.',
+    )
+    check.add_argument(
         '--profile',
         action='append',
         choices=weewx_bench.dataset.PROFILES,
@@ -288,6 +295,8 @@ def run(arguments: argparse.Namespace) -> None:
 def check(arguments: argparse.Namespace) -> None:
     if arguments.backend != 'sqlite':
         sys.exit('check works with --backend sqlite only.')
+    if not 1 <= arguments.driver_days < arguments.days:
+        sys.exit('--driver-days must be at least 1 and less than --days.')
     targets = _install(arguments)
     work_dir = arguments.work_dir.resolve()
     reports = arguments.report or list(weewx_bench.skins.REPORTS)
@@ -311,7 +320,7 @@ def check(arguments: argparse.Namespace) -> None:
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     result_dir = arguments.results_dir / ('%s-check' % stamp)
     result = _header(arguments, targets)
-    result['parameters'].update(reports=reports)
+    result['parameters'].update(reports=reports, driver_days=arguments.driver_days)
     result['versions'] = [
         {
             'label': target.version.label,
@@ -323,15 +332,28 @@ def check(arguments: argparse.Namespace) -> None:
     ]
     result['profiles'] = {}
 
-    # Every station of every profile reads its data at the same time. Each weewxd
-    # is a process of its own, and the slowest of them takes a quarter of an hour.
+    # The history is written directly, which takes seconds. The driver delivers only
+    # the last days, which is enough to see what it and the engine make of them.
+    histories = {
+        profile: weewx_bench.dataset.DataSet(arguments.days, profile, arguments.driver_days)
+        for profile in profiles
+    }
+    history_files = {
+        profile: weewx_bench.dataset.provide_sqlite(baseline, work_dir, history)
+        for profile, history in histories.items()
+    }
+    # Every station of every profile reads at the same time, each weewxd in a
+    # process of its own.
     plan = [(profile, station) for profile in profiles for station in stations_for(profile)]
-    print('Reading %d days through the drivers: %d stations at once' % (arguments.days, len(plan)))
+    print(
+        'Reading the last %d days through the drivers: %d stations at once'
+        % (arguments.driver_days, len(plan))
+    )
     with concurrent.futures.ThreadPoolExecutor(len(plan)) as pool:
         read_in = list(
             pool.map(
                 lambda step: weewx_bench.ingest.ingest(
-                    step[1], weewx_bench.dataset.DataSet(arguments.days, step[0]), work_dir
+                    step[1], histories[step[0]], history_files[step[0]], work_dir
                 ),
                 plan,
             )

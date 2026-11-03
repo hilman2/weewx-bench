@@ -35,31 +35,36 @@ uvx --from git+https://github.com/hilman2/weewx-bench weewx-bench check 5.5.2 5.
 The first version you name is the baseline. The others are compared with it.
 
 For two stations, one like a Davis Vantage and one like an Ecowitt gateway,
-every version first takes in two years of readings through a real driver and
-`weewxd`. Then it generates seven reports from its own database: those of the
-Seasons skin, of the three most popular skins on GitHub, and three plots of a
-long series, see [The reports](#the-reports). weewx-bench compares the
-databases, then every file of the reports, with those of the baseline:
+every version starts with two years of readings, written directly into its
+database. The last week comes through a real driver and `weewxd`. Then every
+version generates seven reports from its own database: those of the Seasons
+skin, of the three most popular skins on GitHub, and three plots of a long
+series, see [The reports](#the-reports). weewx-bench compares the databases,
+then every file of the reports, with those of the baseline:
 
 ```
-weewx-bench 0.4.0 check: 730 days of 5-minute records through the drivers, SQLite
+weewx-bench 0.4.0 check: 730 days of 5-minute records, the last 7 through the drivers, SQLite
 Linux-7.0.0-38-generic-x86_64-with-glibc2.43, AMD Ryzen AI 9 HX 470 w/ Radeon 890M (24 threads), Python 3.12.15
 Reports: SeasonsReport, Belchertown, NeoWXMaterial, WdcReport, Series1h, Series3h, SeriesDay. Clock frozen at 30-Jun-2026 12:01 UTC. Skins of 5.5.2.
 
 Station  Version  Read in  DB differ  Files  Differ  New errors  SELECT  Statements
-davis    5.5.2    523 s               447                        261846  261857
-davis    5.6.0b1  492 s    0          447    0       0           139474  139485
-ecowitt  5.5.2    1269 s              451                        282554  282565
-ecowitt  5.6.0b1  1193 s   0          451    0       0           152792  152803
+davis    5.5.2    5 s                 451                        262328  262339
+davis    5.6.0b1  6 s      0          451    1       0           139539  139550
+ecowitt  5.5.2    12 s                451                        279089  279100
+ecowitt  5.6.0b1  11 s     0          451    1       0           150592  150603
+
+davis, 5.6.0b1: diff in results/20261103-151622-check/diffs/davis-5.6.0b1.diff
+ecowitt, 5.6.0b1: diff in results/20261103-151622-check/diffs/ecowitt-5.6.0b1.diff
 ```
 
-Here, 5.6.0b1 stores the same values as 5.5.2, down to the last digit, and
-writes the same reports from them. It sends about half as many SQL statements
-for the reports.
+Here, 5.6.0b1 stores the same values as 5.5.2 for the week from the drivers,
+down to the last digit. One file of the reports differs, the same as in
+[Measuring the time](#measuring-the-time): the first day of the data in the WDC
+table of June 2024. 5.6.0b1 sends about half as many SQL statements.
 
 | Column | |
 |---|---|
-| Read in | The time `weewxd` took to take in the data. All versions read at the same time, so this is a rough figure |
+| Read in | The time `weewxd` took for the days from the driver. All versions read at the same time, so this is a rough figure |
 | DB differ | Columns of the database whose values are not the same as those of the baseline |
 | Files | Files the version wrote |
 | Differ | Files that are not the same as those of the baseline |
@@ -147,10 +152,8 @@ differences.
 The first `run` takes about two minutes. It installs the versions and the
 skins, and it writes two years of archive records. Later runs reuse both.
 
-`check` takes about 25 minutes on a machine with 24 threads. Most of it is the
-Ecowitt station, whose two years go through `weewxd` one upload at a time.
-All stations read at once, so fewer threads make it longer. For a first look,
-`--days 30` takes about a minute.
+`check` takes about three minutes the first time, and two after that. A
+week through the drivers takes seconds; most of the time goes into the reports.
 
 Everything goes into the directory `.bench`, and the results into `results`,
 both in the current directory. To remove everything, delete these two
@@ -190,23 +193,25 @@ Both stations report every five minutes, for two years up to 30 June 2026
 | `davis` | Vantage Pro2 Plus with solar radiation, UV and ET, a soil and leaf station | Vantage, as WeeWX ships it | US |
 | `ecowitt` | GW2000 gateway, WS69 outdoor array, two WH31 thermo-hygrometers, WH45 air quality, WH57 lightning, two WH51 soil moisture, WN34 soil temperature | [ecowittcustom](https://github.com/weewx-packages/weewx-ecowittcustom) 0.3.0 | METRICWX |
 
-For `check`, the readings take the way they take at a real station:
+For `check`, every version gets a copy of the readings up to a week before
+the end, written directly. The last week takes the way it takes at a real
+station:
 
 - `davis`: weewx-bench plays a Vantage console on a TCP port, the way a
   WeatherLinkIP makes it reachable. When `weewxd` starts, the Vantage driver
-  downloads every archive record from its logger, which holds the whole two
-  years.
+  downloads the archive records its database lacks from the logger.
 - `ecowitt`: weewx-bench plays the gateway and uploads its readings over HTTP,
   as its "Customized" upload does, once every five minutes. The clock of
-  `weewxd` starts two years back, and each upload carries the time it was
-  taken.
+  `weewxd` starts at the last record in the database, and each upload carries
+  the time it was taken.
 
 On the way into the database, each version applies its own `StdConvert`,
 `StdQC` and `StdWXCalculate`: dew point, station pressure from barometer, ET,
 and the rest. Then `StdArchive` writes the records and the daily summaries.
+`--driver-days` sets how many days come through the drivers.
 
-Three things are different from a real station, to make two years fit into
-minutes: `weewxd` runs without clock synchronization, uploads and reports, its
+Three things are different from a real station, to make a week fit into
+seconds: `weewxd` runs without clock synchronization, uploads and reports, its
 SQLite database skips `fsync`, and the gateway sends its next upload as soon as
 the driver has room for it.
 
@@ -291,6 +296,7 @@ For `check`:
 |---|---|---|
 | `--report` | all | A report from [The reports](#the-reports). Repeat it for several |
 | `--profile` | both | `davis` or `ecowitt`. Repeat it for both |
+| `--driver-days` | `7` | The last days, which come through the drivers |
 
 For `run`:
 

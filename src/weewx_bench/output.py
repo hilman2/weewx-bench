@@ -172,8 +172,8 @@ def format_check(result: dict[str, Any]) -> str:
     profiles = result['profiles']
     days = next(iter(profiles.values()))['data_set']['days']
     lines = [
-        'weewx-bench %s check: %d days of 5-minute records through the drivers, %s'
-        % (result['weewx_bench'], days, _backend(parameters)),
+        'weewx-bench %s check: %d days of 5-minute records, the last %d through the drivers, %s'
+        % (result['weewx_bench'], days, parameters['driver_days'], _backend(parameters)),
         _machine(result),
         'Reports: %s. Clock frozen at 30-Jun-2026 12:01 UTC. %s'
         % (', '.join(parameters['reports']), _skins(parameters)),
@@ -247,7 +247,7 @@ def format_check(result: dict[str, Any]) -> str:
         lines += [''] + notes
     lines += [
         '',
-        'Read in: the time weewxd took to take in the data through the driver.',
+        'Read in: the time weewxd took to take in the days from the driver.',
         'DB differ: columns of the database with values not the same as those of the',
         'first version. Differ: files of the reports that are not the same, after',
         'replacing the version numbers and uptimes.',
