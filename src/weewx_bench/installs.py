@@ -167,18 +167,20 @@ def install(version: Version, work_dir: pathlib.Path, python: str) -> Install:
                 '--constraint',
                 str(constraints_path),
                 source,
+                # The hook in weewx_bench_hook.py freezes the clock with it.
+                'time-machine',
             ],
             check=True,
         )
         marker_path.write_text(json.dumps(marker))
 
     result = Install(version, venv, work_dir / 'stations' / version.label)
-    _install_trace_hook(result)
+    _install_hook(result)
     return result
 
 
-def _install_trace_hook(target: Install) -> None:
-    """Make weewx_bench_trace load at every start of the venv's Python.
+def _install_hook(target: Install) -> None:
+    """Make weewx_bench_hook load at every start of the venv's Python.
 
     A .pth file in site-packages is the only place that runs code before weectl
     imports anything, without changing weectl or WeeWX.
@@ -188,9 +190,9 @@ def _install_trace_hook(target: Install) -> None:
             [str(target.python), '-c', 'import sysconfig; print(sysconfig.get_paths()["purelib"])']
         )
     )
-    hook = importlib.resources.files('weewx_bench').joinpath('inside', 'weewx_bench_trace.py')
-    (site_packages / 'weewx_bench_trace.py').write_text(hook.read_text())
-    (site_packages / 'weewx_bench_trace.pth').write_text('import weewx_bench_trace\n')
+    hook = importlib.resources.files('weewx_bench').joinpath('inside', 'weewx_bench_hook.py')
+    (site_packages / 'weewx_bench_hook.py').write_text(hook.read_text())
+    (site_packages / 'weewx_bench_hook.pth').write_text('import weewx_bench_hook\n')
 
 
 @dataclasses.dataclass(frozen=True)
@@ -207,18 +209,12 @@ class Database:
     database_type: dict[str, str]
 
 
-def create_station(
-    target: Install,
-    database: Database,
-    sqlite_file: pathlib.Path | None,
-    skins_from: Install | None,
-) -> None:
+def create_station(target: Install, database: Database, sqlite_file: pathlib.Path | None) -> None:
     """Create a fresh station directory for one installation.
 
     The station is made by the installation's own `weectl station create`, so the
     configuration file is the one this version writes for a new user. Only what a
-    benchmark needs is changed afterwards: logging to the console, the database,
-    and with skins_from the skins of another installation.
+    benchmark needs is changed afterwards: logging to the console and the database.
     """
     if target.station.exists():
         shutil.rmtree(target.station)
@@ -258,6 +254,8 @@ def create_station(
         archive.mkdir(exist_ok=True)
         shutil.copyfile(sqlite_file, archive / database.database_name)
 
-    if skins_from is not None and skins_from is not target:
-        shutil.rmtree(target.station / 'skins')
-        shutil.copytree(skins_from.station / 'skins', target.station / 'skins')
+
+def copy_skins(source: Install, target: Install) -> None:
+    """Replace the skins of target with those of source."""
+    shutil.rmtree(target.station / 'skins')
+    shutil.copytree(source.station / 'skins', target.station / 'skins')

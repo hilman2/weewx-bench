@@ -22,13 +22,15 @@ from typing import Any
 import weewx_bench.dataset
 import weewx_bench.installs
 
-# How Seasons shows the uptime of the server and of WeeWX. Both change from one run to
-# the next, by the minute.
-UPTIME_PATTERN = re.compile(rb'\d+ days?, \d+ hours?, \d+ minutes?')
-
 GENERATED_PATTERN = re.compile(
     r'Generated (\d+) (files|images) for report (\S+) in ([\d.]+) seconds'
 )
+# The start of every log line: "2026-06-30 12:01:00 weectl[1234]: ".
+LOG_PREFIX = re.compile(r'^\S+ \S+ \S+\[\d+\]: ')
+
+# Reference runs see a clock that stands still one minute after the report time,
+# as if WeeWX ran the reports right after the last archive record came in.
+FROZEN_TS = weewx_bench.dataset.STOP_TS + 60
 
 
 def parse_generators(output: str) -> dict[str, dict[str, float]]:
@@ -44,25 +46,52 @@ def parse_generators(output: str) -> dict[str, dict[str, float]]:
     return result
 
 
-def _environment(trace_path: pathlib.Path | None = None) -> dict[str, str]:
+def parse_errors(output: str) -> list[str]:
+    """Return the log lines of level ERROR and CRITICAL, and any traceback.
+
+    The time and the process ID are removed, so that the lines of two runs can be
+    compared.
+    """
+    errors = []
+    in_traceback = False
+    for line in output.splitlines():
+        message = LOG_PREFIX.sub('', line)
+        if line.startswith('Traceback'):
+            in_traceback = True
+        if in_traceback or message.startswith(('ERROR ', 'CRITICAL ')):
+            errors.append(message)
+        # A traceback that Python prints ends with the exception, the first line
+        # that is not indented after the header.
+        if in_traceback and not line.startswith(('Traceback', ' ')):
+            in_traceback = False
+    return errors
+
+
+def _environment(trace_path: pathlib.Path | None, freeze: bool) -> dict[str, str]:
     environment = dict(os.environ)
     # The same time zone and locale everywhere: day boundaries and number formats
     # change what the templates compute.
     environment.update(TZ='UTC', LANG='C.UTF-8', LC_ALL='C.UTF-8', PYTHONHASHSEED='0')
     environment.pop('WEEWX_BENCH_TRACE', None)
+    environment.pop('WEEWX_BENCH_FREEZE', None)
     if trace_path is not None:
         environment['WEEWX_BENCH_TRACE'] = str(trace_path)
+    if freeze:
+        environment['WEEWX_BENCH_FREEZE'] = str(FROZEN_TS)
     return environment
 
 
-def run_once(
-    target: weewx_bench.installs.Install, report: str, trace_path: pathlib.Path | None = None
+def run_reports(
+    target: weewx_bench.installs.Install,
+    reports: list[str],
+    trace_path: pathlib.Path | None = None,
+    freeze: bool = False,
 ) -> dict[str, Any]:
-    """Generate one report from scratch and return what was measured.
+    """Generate the reports from scratch and return what was measured and logged.
 
     HTML_ROOT is deleted first. Otherwise the ImageGenerator would skip plots that
     look fresh, and the CheetahGenerator would skip existing summaries of past months
-    and years, and the run would measure less work than the one before it.
+    and years, and the run would do less work than the one before it.
     """
     shutil.rmtree(target.html_root, ignore_errors=True)
     command = [
@@ -71,14 +100,14 @@ def run_once(
         'run',
         '--config=%s' % target.config_path,
         '--epoch=%d' % weewx_bench.dataset.STOP_TS,
-        report,
+        *reports,
     ]
     start = time.perf_counter()
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        env=_environment(trace_path),
+        env=_environment(trace_path, freeze),
         text=True,
     )
     assert process.stdout is not None
@@ -90,61 +119,97 @@ def run_once(
     process.returncode = os.waitstatus_to_exitcode(status)
     process.stdout.close()
 
-    generators = parse_generators(output)
-    failed = (
-        process.returncode != 0
-        or 'Traceback' in output
-        or ' ERROR ' in output
-        or 'Unknown report' in output
-        or not generators
-    )
-    if failed:
-        raise RuntimeError(
-            'weectl report run failed for %s (exit code %d):\n%s'
-            % (target.version.label, process.returncode, output[-4000:])
-        )
+    errors = parse_errors(output)
+    if 'Unknown report' in output:
+        errors.append(output[output.index('Unknown report') :].splitlines()[0])
     return {
+        'exit_code': process.returncode,
         'wall_seconds': wall,
         'cpu_seconds': usage.ru_utime + usage.ru_stime,
         # ru_maxrss is in KiB on Linux, in bytes on macOS.
         'max_rss_kib': usage.ru_maxrss // 1024 if sys.platform == 'darwin' else usage.ru_maxrss,
-        'generators': generators,
+        'generators': parse_generators(output),
+        'errors': errors,
+        'output': output,
     }
 
 
-def count_statements(target: weewx_bench.installs.Install, report: str) -> dict[str, int]:
-    """Run the report once with the trace hook and return the SQL statements by keyword."""
+def timed_run(target: weewx_bench.installs.Install, reports: list[str]) -> dict[str, Any]:
+    """Run the reports once for the measurement. Fail on any error.
+
+    A version that fails some of the work would look faster than it is.
+    """
+    result = run_reports(target, reports)
+    if result['exit_code'] != 0 or result['errors'] or not result['generators']:
+        raise RuntimeError(
+            'weectl report run failed for %s (exit code %d):\n%s'
+            % (target.version.label, result['exit_code'], result['output'][-4000:])
+        )
+    del result['output'], result['errors'], result['exit_code']
+    return result
+
+
+def reference_run(
+    target: weewx_bench.installs.Install, reports: list[str], snapshot: pathlib.Path
+) -> dict[str, Any]:
+    """Run the reports once with the clock frozen and the statements counted.
+
+    The output is copied to snapshot, for the comparison between versions. Errors
+    do not stop the run: they are part of what the comparison reports.
+    """
     with tempfile.TemporaryDirectory() as directory:
         trace_path = pathlib.Path(directory) / 'trace.json'
-        run_once(target, report, trace_path)
-        counts: dict[str, int] = json.loads(trace_path.read_text())
-    return counts
+        result = run_reports(target, reports, trace_path, freeze=True)
+        try:
+            statements: dict[str, int] = json.loads(trace_path.read_text())
+        except (OSError, ValueError):
+            # The process died before it could write the counts.
+            statements = {}
+    shutil.rmtree(snapshot, ignore_errors=True)
+    if target.html_root.exists():
+        shutil.copytree(target.html_root, snapshot)
+    else:
+        snapshot.mkdir(parents=True)
+    return {
+        'exit_code': result['exit_code'],
+        'statements': statements,
+        'generators': {key: int(value['count']) for key, value in result['generators'].items()},
+        'errors': result['errors'],
+    }
 
 
 def benchmark(
-    targets: list[weewx_bench.installs.Install], report: str, runs: int, warmup: int
+    targets: list[weewx_bench.installs.Install],
+    reports: list[str],
+    runs: int,
+    warmup: int,
+    snapshots: pathlib.Path,
 ) -> dict[str, dict[str, Any]]:
     """Measure every target and return the results, keyed by label.
 
-    The targets take turns, and the order reverses every round. A machine that gets
-    slower or faster during the benchmark then affects all versions alike, instead of
-    the one that happens to run last.
+    Each target first gets a reference run, whose output lands in snapshots/LABEL.
+    The timed runs follow. The targets take turns, and the order reverses every
+    round. A machine that gets slower or faster during the benchmark then affects
+    all versions alike, instead of the one that happens to run last.
     """
     results: dict[str, dict[str, Any]] = {}
     for target in targets:
-        print('Counting SQL statements for %s' % target.version.label)
-        results[target.version.label] = {
-            'statements': count_statements(target, report),
-            'runs': [],
-        }
+        print('Reference run for %s' % target.version.label)
+        reference = reference_run(target, reports, snapshots / target.version.label)
+        if reference['exit_code'] != 0 or reference['errors']:
+            raise RuntimeError(
+                'weectl report run failed for %s:\n%s'
+                % (target.version.label, '\n'.join(reference['errors'][-40:]))
+            )
+        results[target.version.label] = {'reference': reference, 'runs': []}
     for _ in range(warmup):
         for target in targets:
             print('Warm-up run for %s' % target.version.label)
-            run_once(target, report)
+            timed_run(target, reports)
     for round_number in range(runs):
         order = targets if round_number % 2 == 0 else list(reversed(targets))
         for target in order:
-            measured = run_once(target, report)
+            measured = timed_run(target, reports)
             print(
                 'Run %d/%d for %s: %.2f s'
                 % (round_number + 1, runs, target.version.label, measured['wall_seconds'])
@@ -168,41 +233,3 @@ def summarize(runs: list[dict[str, Any]]) -> dict[str, float]:
         'cpu_median': statistics.median(run['cpu_seconds'] for run in runs),
         'max_rss_kib_median': statistics.median(run['max_rss_kib'] for run in runs),
     }
-
-
-def differing_files(
-    baseline: weewx_bench.installs.Install, target: weewx_bench.installs.Install
-) -> list[str]:
-    """Return the files in HTML_ROOT that differ between two installations.
-
-    Pages name the WeeWX version they were made with, and the uptime of the server
-    and of WeeWX. Both are replaced before the files are compared. A file that exists
-    on one side only counts as differing. An empty list means both versions produced
-    the same report.
-    """
-    # The skins name a version too, e.g. "Seasons 5.5.2". With the skins of the
-    # baseline, that is the baseline's version on both sides. So both version
-    # numbers are replaced in both files.
-    versions = [baseline.weewx_version().encode(), target.weewx_version().encode()]
-
-    def read(install: weewx_bench.installs.Install, name: str) -> bytes | None:
-        path = install.html_root / name
-        if not path.is_file():
-            return None
-        content = path.read_bytes()
-        for version in versions:
-            content = content.replace(version, b'VERSION')
-        return UPTIME_PATTERN.sub(b'UPTIME', content)
-
-    def names(install: weewx_bench.installs.Install) -> set[str]:
-        return {
-            str(path.relative_to(install.html_root))
-            for path in install.html_root.rglob('*')
-            if path.is_file()
-        }
-
-    return sorted(
-        name
-        for name in names(baseline) | names(target)
-        if read(baseline, name) != read(target, name)
-    )

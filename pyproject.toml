@@ -1,6 +1,6 @@
 [project]
 name = "weewx-bench"
-version = "0.2.0"
+version = "0.3.0"
 description = "Compare the report generation time of WeeWX versions on the same data"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -37,7 +37,7 @@ strict = true
 [[tool.mypy.overrides]]
 # WeeWX is not installed in the environment of weewx-bench; it lives in the venvs
 # that weewx-bench creates. The same holds for PyMySQL.
-module = ["weewx.*", "weedb", "weedb.*", "schemas.*", "pymysql.*", "configobj"]
+module = ["weewx.*", "weedb", "weedb.*", "schemas.*", "pymysql.*", "time_machine", "configobj"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

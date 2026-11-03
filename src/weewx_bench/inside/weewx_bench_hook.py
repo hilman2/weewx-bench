@@ -3,29 +3,32 @@
 #
 #    See the file LICENSE for your full rights.
 #
-"""Count the SQL statements a WeeWX process sends to its database.
+"""Count the SQL statements of a WeeWX process, and freeze its clock.
 
 weewx-bench copies this module into the site-packages of every benchmarked WeeWX
 installation, together with a .pth file that imports it at interpreter start. It
-does nothing unless the environment variable WEEWX_BENCH_TRACE names a file. Then
-it counts every statement by its first keyword and writes the counts to that file,
-as JSON, when the interpreter exits.
+does nothing unless one of these environment variables is set:
 
-The hooks sit in the database drivers, sqlite3 and PyMySQL, not in weedb. That way
-they work for every WeeWX version, whatever weedb looks like inside.
+WEEWX_BENCH_TRACE names a file. Every SQL statement is counted by its first
+keyword, and the counts are written to that file, as JSON, when the interpreter
+exits. The hooks sit in the database drivers, sqlite3 and PyMySQL, not in weedb.
+That way they work for every WeeWX version, whatever weedb looks like inside.
 
-Counting slows the process down, so a run with WEEWX_BENCH_TRACE set is never a
-timed run.
+WEEWX_BENCH_FREEZE is a unix epoch time. The clock stands still at that time, for
+time.time(), datetime.datetime.now() and everything else that asks for the current
+time. Skins put the current time into their pages, and without this, two runs of
+the same version would never write the same files.
+
+Both slow the process down or change what it measures, so a run with either one is
+never a timed run.
 """
 
 from __future__ import annotations
 
 import os
 
-_trace_path = os.environ.get('WEEWX_BENCH_TRACE')
 
-
-def _install(trace_path: str) -> None:
+def _trace(trace_path: str) -> None:
     import atexit
     import collections
     import json
@@ -68,5 +71,13 @@ def _install(trace_path: str) -> None:
     atexit.register(write)
 
 
-if _trace_path:
-    _install(_trace_path)
+def _freeze(epoch: str) -> None:
+    import time_machine
+
+    time_machine.travel(float(epoch), tick=False).start()
+
+
+if os.environ.get('WEEWX_BENCH_TRACE'):
+    _trace(os.environ['WEEWX_BENCH_TRACE'])
+if os.environ.get('WEEWX_BENCH_FREEZE'):
+    _freeze(os.environ['WEEWX_BENCH_FREEZE'])

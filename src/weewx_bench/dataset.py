@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.resources
 import json
+import os
 import pathlib
 import subprocess
 import time
@@ -25,7 +26,9 @@ STOP_TS = 1782820800
 INTERVAL = 300
 # Part of the name of every data set. Increase it whenever generate.py would write
 # different values, so that a data set from an older weewx-bench is not reused.
-DATA_SET_VERSION = 2
+DATA_SET_VERSION = 4
+# The stations a data set can imitate. generate.py defines them.
+PROFILES = ('davis', 'ecowitt')
 DAY = 86400
 
 # These match compose.yaml.
@@ -39,9 +42,13 @@ TOXIPROXY_URL = 'http://127.0.0.1:8474'
 
 @dataclasses.dataclass(frozen=True)
 class DataSet:
-    """Archive records every INTERVAL seconds, for the given number of days up to STOP_TS."""
+    """Archive records every INTERVAL seconds, for the given number of days up to STOP_TS.
+
+    profile names the station the records imitate, one of PROFILES.
+    """
 
     days: int
+    profile: str = 'davis'
 
     @property
     def start_ts(self) -> int:
@@ -49,10 +56,11 @@ class DataSet:
 
     @property
     def name(self) -> str:
-        return 'weewx_bench_v%d_%dd' % (DATA_SET_VERSION, self.days)
+        return 'weewx_bench_v%d_%s_%dd' % (DATA_SET_VERSION, self.profile, self.days)
 
-    def describe(self) -> dict[str, int]:
+    def describe(self) -> dict[str, int | str]:
         return {
+            'profile': self.profile,
             'days': self.days,
             'interval': INTERVAL,
             'start_ts': self.start_ts,
@@ -71,11 +79,15 @@ def _generate(
                 '-I',
                 str(script_path),
                 json.dumps(database_dict),
+                data_set.profile,
                 str(data_set.start_ts),
                 str(STOP_TS),
                 str(INTERVAL),
             ],
             check=True,
+            # The daily summaries start at midnight in the time zone of the process.
+            # The reports run with TZ=UTC, so the summaries must be built with it too.
+            env=dict(os.environ, TZ='UTC'),
         )
 
 
@@ -92,7 +104,10 @@ def provide_sqlite(
         path.parent.mkdir(parents=True, exist_ok=True)
         partial = path.with_name(path.name + '.partial')
         partial.unlink(missing_ok=True)
-        print('Generating %d days of archive records into %s' % (data_set.days, path))
+        print(
+            'Generating %d days of %s archive records into %s'
+            % (data_set.days, data_set.profile, path)
+        )
         _generate(generator, {'driver': 'weedb.sqlite', 'database_name': str(partial)}, data_set)
         partial.rename(path)
     return path

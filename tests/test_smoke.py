@@ -12,6 +12,7 @@ import pathlib
 import subprocess
 import sys
 
+import weewx_bench.compare
 import weewx_bench.installs
 import weewx_bench.measure
 import weewx_bench.output
@@ -47,7 +48,7 @@ def test_trace_hook_counts_sqlite_statements(tmp_path: pathlib.Path) -> None:
         "connection.execute('SELECT * FROM t'); connection.execute('select 1')"
     )
     subprocess.run(
-        [sys.executable, '-c', 'import weewx_bench_trace; ' + script],
+        [sys.executable, '-c', 'import weewx_bench_hook; ' + script],
         check=True,
         cwd=INSIDE,
         env={'WEEWX_BENCH_TRACE': str(trace_path)},
@@ -62,8 +63,8 @@ def test_format_table() -> None:
         return {
             'label': name,
             'weewx_version': name,
-            'statements': {'SELECT': selects, 'BEGIN': 1},
             'differing_files': [],
+            'reference': {'statements': {'SELECT': selects, 'BEGIN': 1}},
             'summary': {
                 'wall_median': wall,
                 'wall_min': wall,
@@ -80,15 +81,32 @@ def test_format_table() -> None:
         'parameters': {
             'backend': 'sqlite',
             'latency_ms': 0,
-            'report': 'SeasonsReport',
+            'reports': ['SeasonsReport'],
             'runs': 5,
             'warmup': 1,
             'python': '3.12.0',
             'skins': '5.5.2',
-            'data_set': {'days': 730, 'interval': 300},
+            'data_set': {'days': 730, 'interval': 300, 'profile': 'davis'},
         },
         'versions': [version('5.5.2', 2.0, 100), version('5.6.0b1', 1.5, 25)],
     }
     table = weewx_bench.output.format_table(result)
     assert '-25.0 %' in table
     assert 'identical to 5.5.2' in table
+
+
+def test_compare_ignores_versions_and_uptimes(tmp_path: pathlib.Path) -> None:
+    old, new = tmp_path / 'old', tmp_path / 'new'
+    for directory, version, uptime, temperature in [
+        (old, '5.5.2', '3 days, 1 hour, 2 minutes', '20.1'),
+        (new, '5.6.0', '3 days, 1 hour, 3 minutes', '20.2'),
+    ]:
+        (directory / 'json').mkdir(parents=True)
+        (directory / 'index.html').write_text('WeeWX %s, up %s\n' % (version, uptime))
+        (directory / 'json' / 'data.json').write_text('{"outTemp": %s, "a": 1}' % temperature)
+    versions = ['5.5.2', '5.6.0']
+    differing = weewx_bench.compare.differing_files(old, new, versions)
+    assert differing == ['json/data.json']
+    diff = weewx_bench.compare.describe_differences(old, new, differing, versions, ('a', 'b'))
+    assert '- "outTemp": 20.1' in diff
+    assert '+ "outTemp": 20.2' in diff

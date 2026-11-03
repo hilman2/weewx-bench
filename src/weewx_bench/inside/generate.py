@@ -10,10 +10,11 @@ that installation's ``weewx``. It must not import ``weewx_bench``.
 
 Usage::
 
-    python generate.py DATABASE_JSON START_TS STOP_TS INTERVAL
+    python generate.py DATABASE_JSON PROFILE START_TS STOP_TS INTERVAL
 
 ``DATABASE_JSON`` is a WeeWX database dictionary, the same keys a ``[[Databases]]``
-entry has after ``[DatabaseTypes]`` was merged in. ``INTERVAL`` is in seconds.
+entry has after ``[DatabaseTypes]`` was merged in. ``PROFILE`` is one of the keys of
+PROFILES. ``INTERVAL`` is in seconds.
 
 Every value is a function of the timestamp alone. The same arguments give the same
 database, on every machine and with every WeeWX version.
@@ -24,11 +25,12 @@ from __future__ import annotations
 import json
 import math
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import weedb
 import weewx
 import weewx.manager
+import weewx.units
 import weewx.wxformulas
 
 try:
@@ -39,6 +41,8 @@ except ImportError:
 
 DAY = 86400
 YEAR = 365.25 * DAY
+# The station altitude that weewx-bench gives `weectl station create`.
+ALTITUDE_FT = 984.0
 
 
 def wave(timestamp: int, period: float, phase: float = 0.0) -> float:
@@ -46,8 +50,11 @@ def wave(timestamp: int, period: float, phase: float = 0.0) -> float:
     return math.sin(2.0 * math.pi * timestamp / period + phase)
 
 
-def make_record(timestamp: int, interval: int) -> dict:
-    """Return the archive record for one timestamp, in US units."""
+def outdoor(timestamp: int, interval: int) -> dict:
+    """Return the outdoor weather at one timestamp, in US units.
+
+    Both profiles share this weather. They differ in the sensors that see it.
+    """
     # The station is on the prime meridian and the runs use TZ=UTC, so noon is at
     # 12:00 UTC. day_angle is 0 at midnight; -cos(day_angle) peaks at noon.
     day_angle = 2.0 * math.pi * (timestamp % DAY) / DAY
@@ -79,7 +86,7 @@ def make_record(timestamp: int, interval: int) -> dict:
     season = 0.6 - 0.4 * math.cos(year_angle - 0.2)
     radiation = max(0.0, -math.cos(day_angle)) * 1000.0 * season
 
-    record = {
+    return {
         'dateTime': timestamp,
         'usUnits': weewx.US,
         'interval': interval // 60,
@@ -90,25 +97,94 @@ def make_record(timestamp: int, interval: int) -> dict:
         'heatindex': weewx.wxformulas.heatindexF(out_temp, out_humidity),
         'humidex': weewx.wxformulas.humidexF(out_temp, out_humidity),
         'appTemp': weewx.wxformulas.apptempF(out_temp, out_humidity, wind_speed),
+        'cloudbase': weewx.wxformulas.cloudbase_US(out_temp, out_humidity, ALTITUDE_FT),
         'barometer': barometer,
         'pressure': barometer - 0.9,
         'altimeter': barometer + 0.01,
         'windSpeed': wind_speed,
         'windDir': wind_dir,
         'windGust': 1.5 * wind_speed + 1.0,
-        'windGustDir': wind_dir,
+        'windrun': wind_speed * interval / 3600.0,
         'rain': rain,
         'rainRate': rain * 3600.0 / interval,
         'radiation': radiation,
-        'UV': radiation / 90.0,
-        'ET': 0.0002 * radiation * interval / 3600.0,
-        'inTemp': 70.0 + 2.0 * math.sin(day_angle),
-        'inHumidity': 40.0 + 5.0 * math.sin(year_angle),
-        'extraTemp1': out_temp - 3.0,
-        'extraHumid1': min(100.0, out_humidity + 5.0),
-        'rxCheckPercent': min(100.0, 98.0 + 2.0 * wave(timestamp, 0.7 * DAY)),
-        'consBatteryVoltage': 4.6 - 0.1 * (timestamp % (30 * DAY)) / (30 * DAY),
+        # Thunderstorms come with the heaviest rain, in summer only.
+        'thunder': spell > 0.995 and season > 0.8,
     }
+
+
+def davis(timestamp: int, interval: int) -> dict:
+    """Return a record as a Davis Vantage Pro2 Plus with a soil and leaf station writes it.
+
+    US units, as the Vantage driver uses them.
+    """
+    record = outdoor(timestamp, interval)
+    del record['thunder']
+    day_angle = 2.0 * math.pi * (timestamp % DAY) / DAY
+    record.update(
+        {
+            'windGustDir': record['windDir'],
+            'UV': record['radiation'] / 90.0,
+            'ET': 0.0002 * record['radiation'] * interval / 3600.0,
+            'inTemp': 70.0 + 2.0 * math.sin(day_angle),
+            'inHumidity': 40.0 + 5.0 * wave(timestamp, YEAR),
+            'soilTemp1': record['outTemp'] * 0.3 + 38.0,
+            'soilMoist1': 20.0 + 15.0 * wave(timestamp, 9.0 * DAY),
+            'leafTemp1': record['outTemp'] - 1.0,
+            'leafWet1': 15.0 if record['rain'] else 0.0,
+            'rxCheckPercent': min(100.0, 98.0 + 2.0 * wave(timestamp, 0.7 * DAY)),
+            'consBatteryVoltage': 4.6 - 0.1 * (timestamp % (30 * DAY)) / (30 * DAY),
+            'txBatteryStatus': 0.0,
+        }
+    )
+    return record
+
+
+def ecowitt(timestamp: int, interval: int) -> dict:
+    """Return a record as an Ecowitt gateway pushes it, after the driver mapped it.
+
+    The sensors are a WS90 outdoor array, two WH31 thermo-hygrometers, a WH45 air
+    quality sensor, a WH57 lightning detector, two WH51 soil moisture sensors and a
+    WN34 soil thermometer. The values are in US units here and stored in METRICWX.
+    """
+    record = outdoor(timestamp, interval)
+    thunder = record.pop('thunder')
+    day_angle = 2.0 * math.pi * (timestamp % DAY) / DAY
+    pm2_5 = 8.0 + 6.0 * wave(timestamp, 2.3 * DAY) + 3.0 * math.sin(day_angle)
+    record.update(
+        {
+            # The WS90 reports the UV index in whole numbers.
+            'UV': float(round(record['radiation'] / 90.0)),
+            'inTemp': 71.0 + 1.5 * math.sin(day_angle),
+            'inHumidity': 45.0 + 5.0 * wave(timestamp, YEAR),
+            'extraTemp1': 64.0 + 2.0 * math.sin(day_angle),
+            'extraHumid1': 55.0 + 5.0 * wave(timestamp, 4.0 * DAY),
+            'extraTemp2': record['outTemp'] * 0.2 + 52.0,
+            'extraHumid2': 70.0 + 10.0 * wave(timestamp, 6.0 * DAY),
+            'pm2_5': pm2_5,
+            'pm10_0': 1.4 * pm2_5,
+            'co2': 450.0 + 300.0 * max(0.0, math.sin(day_angle)),
+            # The WH57 reports zero strikes, and no distance, when there is no storm.
+            'lightning_strike_count': 12.0 if thunder else 0.0,
+            'lightning_distance': 5.0 + 4.0 * wave(timestamp, 0.1 * DAY) if thunder else None,
+            'soilMoist1': 25.0 + 15.0 * wave(timestamp, 9.0 * DAY),
+            'soilMoist2': 35.0 + 10.0 * wave(timestamp, 11.0 * DAY),
+            'soilTemp1': record['outTemp'] * 0.3 + 38.0,
+            'outTempBatteryStatus': 0.0,
+            'batteryStatus1': 0.0,
+            'batteryStatus2': 0.0,
+        }
+    )
+    metric: dict = weewx.units.to_METRICWX(record)
+    return metric
+
+
+PROFILES: dict[str, Callable[[int, int], dict]] = {'davis': davis, 'ecowitt': ecowitt}
+
+
+def make_record(profile: str, timestamp: int, interval: int) -> dict:
+    """Return the archive record of a profile for one timestamp."""
+    record = PROFILES[profile](timestamp, interval)
     # math.sin() and friends may differ in the last bit between C libraries, e.g.
     # glibc and macOS. Three decimals hide that, so the database is the same on every
     # machine. That is also about the resolution a real station reports.
@@ -117,10 +193,10 @@ def make_record(timestamp: int, interval: int) -> dict:
     }
 
 
-def generate(start_ts: int, stop_ts: int, interval: int) -> Iterator[dict]:
+def generate(profile: str, start_ts: int, stop_ts: int, interval: int) -> Iterator[dict]:
     """Yield the records from start_ts to stop_ts, both included."""
     for timestamp in range(start_ts, stop_ts + 1, interval):
-        yield make_record(timestamp, interval)
+        yield make_record(profile, timestamp, interval)
 
 
 def is_complete(database_dict: dict, start_ts: int, stop_ts: int) -> bool:
@@ -147,6 +223,9 @@ def write_archive(manager: weewx.manager.Manager, records: Iterator[dict]) -> No
     """
     first = next(records)
     columns = list(first)
+    unknown = set(columns) - set(manager.sqlkeys)
+    if unknown:
+        raise SystemExit('Not in the database schema: %s' % ', '.join(sorted(unknown)))
     sql = 'INSERT INTO %s (%s) VALUES (%s)' % (
         manager.table_name,
         ', '.join(columns),
@@ -170,7 +249,8 @@ def _insert(manager: weewx.manager.Manager, sql: str, columns: list, records: li
 
 def main() -> None:
     database_dict = json.loads(sys.argv[1])
-    start_ts, stop_ts, interval = (int(argument) for argument in sys.argv[2:5])
+    profile = sys.argv[2]
+    start_ts, stop_ts, interval = (int(argument) for argument in sys.argv[3:6])
 
     if is_complete(database_dict, start_ts, stop_ts):
         print('Data set is already present.')
@@ -185,7 +265,7 @@ def main() -> None:
 
     schema = wview_extended.schema
     with weewx.manager.DaySummaryManager.open_with_create(database_dict, schema=schema) as manager:
-        write_archive(manager, generate(start_ts, stop_ts, interval))
+        write_archive(manager, generate(profile, start_ts, stop_ts, interval))
     # Open again: the manager caches the first and last timestamp, and the backfill
     # needs the ones that are now in the archive table.
     with weewx.manager.DaySummaryManager.open(database_dict) as manager:
