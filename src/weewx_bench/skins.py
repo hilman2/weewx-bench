@@ -12,6 +12,7 @@ import pathlib
 import shutil
 import subprocess
 import tarfile
+import threading
 import urllib.request
 import zipfile
 
@@ -85,6 +86,11 @@ SERIES_SKIN = """# Written by weewx-bench.
 REPORTS = ('SeasonsReport',) + tuple(extension.report for extension in EXTENSIONS) + tuple(SERIES)
 
 
+# check installs a driver into several stations at once, from several threads. One of
+# them downloads and unpacks, the others wait and use the result.
+_UNPACK_LOCK = threading.Lock()
+
+
 def unpack(url: str, work_dir: pathlib.Path) -> pathlib.Path:
     """Download and unpack an extension release once. Return the directory with install.py.
 
@@ -92,6 +98,11 @@ def unpack(url: str, work_dir: pathlib.Path) -> pathlib.Path:
     directory. The WDC archive has several, so every extension is installed from a
     directory instead.
     """
+    with _UNPACK_LOCK:
+        return _unpack(url, work_dir)
+
+
+def _unpack(url: str, work_dir: pathlib.Path) -> pathlib.Path:
     name = url.rsplit('/', 1)[-1]
     target = work_dir / 'extensions' / name
     if not target.exists():
