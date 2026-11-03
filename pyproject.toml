@@ -37,7 +37,7 @@ strict = true
 [[tool.mypy.overrides]]
 # WeeWX is not installed in the environment of weewx-bench; it lives in the venvs
 # that weewx-bench creates. The same holds for PyMySQL.
-module = ["weewx.*", "weedb", "weedb.*", "pymysql.*", "configobj"]
+module = ["weewx.*", "weedb", "weedb.*", "schemas.*", "pymysql.*", "configobj"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

@@ -35,6 +35,13 @@ def machine() -> dict[str, Any]:
     return {'system': platform.platform(), 'cpu': cpu, 'threads': os.cpu_count()}
 
 
+def _name(version: dict[str, Any]) -> str:
+    """Return the label, and the version number if the label is something else."""
+    if version['label'] == version['weewx_version']:
+        return str(version['label'])
+    return '%s (%s)' % (version['label'], version['weewx_version'])
+
+
 def _change(value: float, baseline: float) -> str:
     if baseline == 0:
         return ''
@@ -94,7 +101,7 @@ def format_table(result: dict[str, Any]) -> str:
         statements = version['statements']
         rows.append(
             [
-                version['weewx_version'],
+                _name(version),
                 '%.2f s' % summary['wall_median'],
                 _change(summary['wall_median'], baseline['summary']['wall_median']),
                 '%.2f-%.2f' % (summary['wall_min'], summary['wall_max']),
@@ -117,12 +124,12 @@ def format_table(result: dict[str, Any]) -> str:
             shown = ', '.join(differing[:5]) + (', ...' if len(differing) > 5 else '')
             lines.append(
                 'Output of %s: %d files differ from %s: %s'
-                % (version['weewx_version'], len(differing), baseline['weewx_version'], shown)
+                % (_name(version), len(differing), _name(baseline), shown)
             )
         else:
             lines.append(
                 'Output of %s: identical to %s, apart from the version number.'
-                % (version['weewx_version'], baseline['weewx_version'])
+                % (_name(version), _name(baseline))
             )
 
     lines += [

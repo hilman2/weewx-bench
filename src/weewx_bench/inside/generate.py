@@ -29,8 +29,13 @@ from collections.abc import Iterator
 import weedb
 import weewx
 import weewx.manager
-import weewx.schemas.wview_extended
 import weewx.wxformulas
+
+try:
+    import weewx.schemas.wview_extended as wview_extended
+except ImportError:
+    # WeeWX 5.0 and 5.1 have the schemas as a top-level package.
+    import schemas.wview_extended as wview_extended
 
 DAY = 86400
 YEAR = 365.25 * DAY
@@ -178,7 +183,7 @@ def main() -> None:
     except weedb.NoDatabaseError:
         pass
 
-    schema = weewx.schemas.wview_extended.schema
+    schema = wview_extended.schema
     with weewx.manager.DaySummaryManager.open_with_create(database_dict, schema=schema) as manager:
         write_archive(manager, generate(start_ts, stop_ts, interval))
     # Open again: the manager caches the first and last timestamp, and the backfill

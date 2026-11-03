@@ -60,6 +60,7 @@ def test_trace_hook_counts_sqlite_statements(tmp_path: pathlib.Path) -> None:
 def test_format_table() -> None:
     def version(name: str, wall: float, selects: int) -> dict[str, object]:
         return {
+            'label': name,
             'weewx_version': name,
             'statements': {'SELECT': selects, 'BEGIN': 1},
             'differing_files': [],

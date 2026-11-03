@@ -54,6 +54,8 @@ def parse_version(spec: str) -> Version:
     match = VERSION_PATTERN.match(spec)
     if not match:
         raise ValueError('%r is not a version number. Use LABEL=SOURCE for anything else.' % spec)
+    if int(spec.split('.')[0]) < 5:
+        raise ValueError('weewx-bench needs WeeWX 5.0 or later. %s has no weectl.' % spec)
     if match.group(2):
         return Version(spec, DEVELOPMENT_URL % spec)
     return Version(spec, 'weewx==%s' % spec)
