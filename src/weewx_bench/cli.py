@@ -306,7 +306,9 @@ def check(arguments: argparse.Namespace) -> None:
         }
         weewx_bench.measure.reference_run(baseline, reports, snapshots / '.baseline-again')
         unstable = weewx_bench.compare.differing_files(
-            snapshots / baseline_label, snapshots / '.baseline-again', [version_numbers[baseline_label]]
+            snapshots / baseline_label,
+            snapshots / '.baseline-again',
+            [version_numbers[baseline_label]],
         )
 
         entries = []
