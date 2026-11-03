@@ -72,8 +72,13 @@ def _environment(trace_path: pathlib.Path | None, freeze: bool) -> dict[str, str
     # The same time zone and locale everywhere: day boundaries and number formats
     # change what the templates compute.
     environment.update(TZ='UTC', LANG='C.UTF-8', LC_ALL='C.UTF-8', PYTHONHASHSEED='0')
-    environment.pop('WEEWX_BENCH_TRACE', None)
-    environment.pop('WEEWX_BENCH_FREEZE', None)
+    for name in (
+        'WEEWX_BENCH_TRACE',
+        'WEEWX_BENCH_FREEZE',
+        'WEEWX_BENCH_CLOCK',
+        'WEEWX_BENCH_NOSYNC',
+    ):
+        environment.pop(name, None)
     if trace_path is not None:
         environment['WEEWX_BENCH_TRACE'] = str(trace_path)
     if freeze:

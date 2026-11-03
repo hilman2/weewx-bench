@@ -62,25 +62,45 @@ EXTENSIONS = (
     ),
 )
 
-REPORTS = ('SeasonsReport',) + tuple(extension.report for extension in EXTENSIONS)
+# Reports with a single plot: the average temperature of a year, at different
+# aggregate_interval values. Tom Keffer named this case in the beta thread of 5.6.0
+# as the one where the speed-up shows most. Keyed by report name.
+SERIES = {'Series1h': '1h', 'Series3h': '3h', 'SeriesDay': 'day'}
+
+SERIES_SKIN = """# Written by weewx-bench.
+[ImageGenerator]
+    image_width = 800
+    image_height = 300
+    [[year_images]]
+        time_length = 31536000
+        aggregate_type = avg
+        aggregate_interval = %s
+        [[[yearouttemp]]]
+            [[[[outTemp]]]]
+
+[Generators]
+    generator_list = weewx.imagegenerator.ImageGenerator
+"""
+
+REPORTS = ('SeasonsReport',) + tuple(extension.report for extension in EXTENSIONS) + tuple(SERIES)
 
 
-def _unpack(extension: Extension, work_dir: pathlib.Path) -> pathlib.Path:
-    """Download and unpack the release once. Return the directory with install.py.
+def unpack(url: str, work_dir: pathlib.Path) -> pathlib.Path:
+    """Download and unpack an extension release once. Return the directory with install.py.
 
     `weectl extension install` takes an archive only if it has a single top-level
-    directory. The WDC archive has several, so all three are installed from a
+    directory. The WDC archive has several, so every extension is installed from a
     directory instead.
     """
-    name = extension.url.rsplit('/', 1)[-1]
+    name = url.rsplit('/', 1)[-1]
     target = work_dir / 'extensions' / name
     if not target.exists():
         archive = work_dir / 'downloads' / name
         if not archive.exists():
             archive.parent.mkdir(parents=True, exist_ok=True)
-            print('Downloading %s' % extension.url)
+            print('Downloading %s' % url)
             partial = archive.with_name(name + '.partial')
-            urllib.request.urlretrieve(extension.url, partial)
+            urllib.request.urlretrieve(url, partial)
             partial.rename(archive)
         partial_dir = target.with_name(name + '.partial')
         shutil.rmtree(partial_dir, ignore_errors=True)
@@ -100,8 +120,8 @@ def _unpack(extension: Extension, work_dir: pathlib.Path) -> pathlib.Path:
     return installers[0].parent
 
 
-def install_extensions(target: weewx_bench.installs.Install, work_dir: pathlib.Path) -> None:
-    """Install every skin of EXTENSIONS into the station of an installation.
+def install_skins(target: weewx_bench.installs.Install, work_dir: pathlib.Path) -> None:
+    """Install every skin of EXTENSIONS and SERIES into the station of an installation.
 
     Each installation runs its own `weectl extension install`. Afterwards the
     report sections are written anew. The installers disagree on where the output
@@ -114,7 +134,7 @@ def install_extensions(target: weewx_bench.installs.Install, work_dir: pathlib.P
                 str(target.weectl),
                 'extension',
                 'install',
-                str(_unpack(extension, work_dir)),
+                str(unpack(extension.url, work_dir)),
                 '--config=%s' % target.config_path,
                 '--yes',
             ],
@@ -129,5 +149,14 @@ def install_extensions(target: weewx_bench.installs.Install, work_dir: pathlib.P
             'HTML_ROOT': 'public_html/%s' % extension.html_root,
             'enable': 'true',
             'Extras': dict(extension.extras),
+        }
+    for report, interval in SERIES.items():
+        skin = 'bench-%s' % report.lower()
+        (target.station / 'skins' / skin).mkdir()
+        (target.station / 'skins' / skin / 'skin.conf').write_text(SERIES_SKIN % interval)
+        config['StdReport'][report] = {
+            'skin': skin,
+            'HTML_ROOT': 'public_html/%s' % report.lower(),
+            'enable': 'true',
         }
     config.write()

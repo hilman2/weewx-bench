@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime
 import json
 import pathlib
@@ -18,6 +19,7 @@ from typing import Any
 import weewx_bench
 import weewx_bench.compare
 import weewx_bench.dataset
+import weewx_bench.ingest
 import weewx_bench.installs
 import weewx_bench.measure
 import weewx_bench.output
@@ -101,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
         '--report',
         action='append',
         help='Report to run, one of %s. Repeat the option for several. '
-        'Default is SeasonsReport.' % reports,
+        'Default is all of them.' % reports,
     )
     run.add_argument(
         '--profile',
@@ -188,7 +190,7 @@ def _prepare_stations(
     for target in targets:
         print('Creating the station for %s' % target.version.label)
         weewx_bench.installs.create_station(target, database, sqlite_file)
-        weewx_bench.skins.install_extensions(target, work_dir)
+        weewx_bench.skins.install_skins(target, work_dir)
     if arguments.skins == 'baseline':
         for target in targets[1:]:
             weewx_bench.installs.copy_skins(generator, target)
@@ -222,14 +224,12 @@ def run(arguments: argparse.Namespace) -> None:
     if arguments.runs < 1:
         sys.exit('--runs must be at least 1.')
     targets = _install(arguments)
-    reports = arguments.report or ['SeasonsReport']
+    reports = arguments.report or list(weewx_bench.skins.REPORTS)
     data_set = weewx_bench.dataset.DataSet(arguments.days, arguments.profile)
     _prepare_stations(arguments, targets, data_set, arguments.latency_ms)
+    baseline = targets[0]
+    version_numbers = {target.version.label: target.weewx_version() for target in targets}
 
-    snapshots = arguments.work_dir.resolve() / 'snapshots' / 'run'
-    measured = weewx_bench.measure.benchmark(
-        targets, reports, arguments.runs, arguments.warmup, snapshots
-    )
     result = _header(arguments, targets)
     result['parameters'].update(
         latency_ms=arguments.latency_ms,
@@ -238,25 +238,42 @@ def run(arguments: argparse.Namespace) -> None:
         warmup=arguments.warmup,
         data_set=data_set.describe(),
     )
-    result['versions'] = []
-    baseline = targets[0]
-    for target in targets:
-        entry = measured[target.version.label]
-        versions = [baseline.weewx_version(), target.weewx_version()]
-        result['versions'].append(
-            {
-                'label': target.version.label,
-                'source': target.version.source,
-                'weewx_version': target.weewx_version(),
-                'packages': target.freeze(),
-                'reference': entry['reference'],
-                'differing_files': weewx_bench.compare.differing_files(
-                    snapshots / baseline.version.label, snapshots / target.version.label, versions
-                ),
-                'summary': weewx_bench.measure.summarize(entry['runs']),
-                'runs': entry['runs'],
-            }
+    result['versions'] = [
+        {
+            'label': target.version.label,
+            'source': target.version.source,
+            'weewx_version': version_numbers[target.version.label],
+            'packages': target.freeze(),
+        }
+        for target in targets
+    ]
+    result['reports'] = []
+    # One report at a time, so that every report gets its own time.
+    for report in reports:
+        print('Measuring %s' % report)
+        snapshots = arguments.work_dir.resolve() / 'snapshots' / 'run' / report
+        measured = weewx_bench.measure.benchmark(
+            targets, [report], arguments.runs, arguments.warmup, snapshots
         )
+        entries = []
+        for target in targets:
+            label = target.version.label
+            entry = measured[label]
+            entries.append(
+                {
+                    'label': label,
+                    'weewx_version': version_numbers[label],
+                    'reference': entry['reference'],
+                    'differing_files': weewx_bench.compare.differing_files(
+                        snapshots / baseline.version.label,
+                        snapshots / label,
+                        [version_numbers[baseline.version.label], version_numbers[label]],
+                    ),
+                    'summary': weewx_bench.measure.summarize(entry['runs']),
+                    'runs': entry['runs'],
+                }
+            )
+        result['reports'].append({'report': report, 'versions': entries})
 
     arguments.results_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
@@ -269,12 +286,27 @@ def run(arguments: argparse.Namespace) -> None:
 
 
 def check(arguments: argparse.Namespace) -> None:
+    if arguments.backend != 'sqlite':
+        sys.exit('check works with --backend sqlite only.')
     targets = _install(arguments)
+    work_dir = arguments.work_dir.resolve()
     reports = arguments.report or list(weewx_bench.skins.REPORTS)
     profiles = arguments.profile or list(weewx_bench.dataset.PROFILES)
     baseline = targets[0]
     baseline_label = baseline.version.label
     version_numbers = {target.version.label: target.weewx_version() for target in targets}
+
+    def stations_for(profile: str) -> list[weewx_bench.installs.Install]:
+        """Return a station per version for one profile, and the baseline again.
+
+        Whatever differs between the two stations of the baseline cannot be compared
+        between versions: it is left out, and listed.
+        """
+        directory = work_dir / 'stations' / profile
+        return [
+            weewx_bench.installs.Install(t.version, t.venv, directory / t.version.label)
+            for t in targets
+        ] + [weewx_bench.installs.Install(baseline.version, baseline.venv, directory / '.again')]
 
     stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
     result_dir = arguments.results_dir / ('%s-check' % stamp)
@@ -291,74 +323,121 @@ def check(arguments: argparse.Namespace) -> None:
     ]
     result['profiles'] = {}
 
+    # Every station of every profile reads its data at the same time. Each weewxd
+    # is a process of its own, and the slowest of them takes a quarter of an hour.
+    plan = [(profile, station) for profile in profiles for station in stations_for(profile)]
+    print('Reading %d days through the drivers: %d stations at once' % (arguments.days, len(plan)))
+    with concurrent.futures.ThreadPoolExecutor(len(plan)) as pool:
+        read_in = list(
+            pool.map(
+                lambda step: weewx_bench.ingest.ingest(
+                    step[1], weewx_bench.dataset.DataSet(arguments.days, step[0]), work_dir
+                ),
+                plan,
+            )
+        )
+    ingests = {
+        str(station.station): outcome for (_, station), outcome in zip(plan, read_in, strict=True)
+    }
+
     for profile in profiles:
         data_set = weewx_bench.dataset.DataSet(arguments.days, profile)
-        _prepare_stations(arguments, targets, data_set)
-        snapshots = arguments.work_dir.resolve() / 'snapshots' / 'check' / profile
+        stations = stations_for(profile)
+        targets_here, again = stations[:-1], stations[-1]
+        baseline_here = stations[0]
+        ingested = [ingests[str(station.station)] for station in stations]
+        for station in stations:
+            weewx_bench.skins.install_skins(station, work_dir)
+        if arguments.skins == 'baseline':
+            for station in stations[1:]:
+                weewx_bench.installs.copy_skins(baseline_here, station)
 
-        # Whatever differs between two runs of the same version cannot be compared
-        # between versions. It is left out, and listed.
-        print('Reference runs for %s, %s' % (baseline_label, profile))
-        references = {
-            baseline_label: weewx_bench.measure.reference_run(
-                baseline, reports, snapshots / baseline_label
+        def database(target: weewx_bench.installs.Install) -> pathlib.Path:
+            name = weewx_bench.dataset.SQLITE_DATABASE.database_name
+            return target.station / 'archive' / name
+
+        unstable_columns = weewx_bench.compare.compare_databases(
+            database(baseline_here), database(again)
+        )
+        snapshots = work_dir / 'snapshots' / 'check' / profile
+        print('Generating the reports')
+        references = {}
+        for station in stations:
+            references[str(station.station)] = weewx_bench.measure.reference_run(
+                station, reports, snapshots / station.station.name
             )
-        }
-        weewx_bench.measure.reference_run(baseline, reports, snapshots / '.baseline-again')
-        unstable = weewx_bench.compare.differing_files(
-            snapshots / baseline_label,
-            snapshots / '.baseline-again',
+        unstable_files = weewx_bench.compare.differing_files(
+            snapshots / baseline_here.station.name,
+            snapshots / again.station.name,
             [version_numbers[baseline_label]],
         )
 
         entries = []
-        for target in targets:
+        baseline_errors = set(ingested[0]['errors']) | set(
+            references[str(baseline_here.station)]['errors']
+        )
+        for target, feed in zip(targets_here, ingested, strict=False):
             label = target.version.label
-            if label not in references:
-                print('Reference run for %s, %s' % (label, profile))
-                references[label] = weewx_bench.measure.reference_run(
-                    target, reports, snapshots / label
-                )
+            reference = references[str(target.station)]
             numbers = [version_numbers[baseline_label], version_numbers[label]]
+            database_differences = {
+                table: {
+                    column: count
+                    for column, count in columns.items()
+                    if column not in unstable_columns.get(table, {})
+                }
+                for table, columns in weewx_bench.compare.compare_databases(
+                    database(baseline_here), database(target)
+                ).items()
+            }
+            database_differences = {t: c for t, c in database_differences.items() if c}
             differing = [
                 name
                 for name in weewx_bench.compare.differing_files(
-                    snapshots / baseline_label, snapshots / label, numbers
+                    snapshots / baseline_here.station.name, snapshots / target.station.name, numbers
                 )
-                if name not in unstable
+                if name not in unstable_files
             ]
             diff_path = None
-            if differing:
+            if differing or database_differences:
                 diff_path = result_dir / 'diffs' / ('%s-%s.diff' % (profile, label))
                 diff_path.parent.mkdir(parents=True, exist_ok=True)
                 diff_path.write_text(
-                    weewx_bench.compare.describe_differences(
-                        snapshots / baseline_label,
-                        snapshots / label,
+                    weewx_bench.compare.describe_database_differences(
+                        database(baseline_here),
+                        database(target),
+                        database_differences,
+                        (baseline_label, label),
+                    )
+                    + weewx_bench.compare.describe_differences(
+                        snapshots / baseline_here.station.name,
+                        snapshots / target.station.name,
                         differing,
                         numbers,
                         (baseline_label, label),
                     )
                 )
-            baseline_errors = set(references[baseline_label]['errors'])
+            errors = feed['errors'] + reference['errors']
             entries.append(
                 {
                     'label': label,
                     'weewx_version': version_numbers[label],
-                    'files': len(weewx_bench.compare.names(snapshots / label)),
+                    'ingest': feed,
+                    'database_differences': database_differences,
+                    'files': len(weewx_bench.compare.names(snapshots / target.station.name)),
                     'differing_files': differing,
                     'diff': str(diff_path) if diff_path else None,
-                    'new_errors': [
-                        error
-                        for error in references[label]['errors']
-                        if error not in baseline_errors
-                    ],
-                    **references[label],
+                    'errors': errors,
+                    'new_errors': [error for error in errors if error not in baseline_errors],
+                    'exit_code': reference['exit_code'],
+                    'statements': reference['statements'],
+                    'generators': reference['generators'],
                 }
             )
         result['profiles'][profile] = {
             'data_set': data_set.describe(),
-            'unstable_files': unstable,
+            'unstable_columns': unstable_columns,
+            'unstable_files': unstable_files,
             'versions': entries,
         }
 

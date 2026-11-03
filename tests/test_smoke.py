@@ -69,30 +69,36 @@ def test_format_table() -> None:
                 'wall_median': wall,
                 'wall_min': wall,
                 'wall_max': wall,
-                'generators_median': wall,
+                'generators_median': wall / 2,
                 'cpu_median': wall,
                 'max_rss_kib_median': 46080,
             },
         }
 
     result = {
-        'weewx_bench': '0.1.0',
+        'weewx_bench': '0.4.0',
         'machine': {'system': 'Linux', 'cpu': 'CPU', 'threads': 4},
         'parameters': {
             'backend': 'sqlite',
             'latency_ms': 0,
-            'reports': ['SeasonsReport'],
             'runs': 5,
             'warmup': 1,
             'python': '3.12.0',
             'skins': '5.5.2',
             'data_set': {'days': 730, 'interval': 300, 'profile': 'davis'},
         },
-        'versions': [version('5.5.2', 2.0, 100), version('5.6.0b1', 1.5, 25)],
+        'versions': [{'label': '5.5.2', 'weewx_version': '5.5.2'}],
+        'reports': [
+            {
+                'report': 'Series3h',
+                'versions': [version('5.5.2', 2.0, 100), version('5.6.0b1', 1.5, 25)],
+            }
+        ],
     }
     table = weewx_bench.output.format_table(result)
     assert '-25.0 %' in table
-    assert 'identical to 5.5.2' in table
+    assert 'Series3h' in table
+    assert 'same files as 5.5.2' in table
 
 
 def test_compare_ignores_versions_and_uptimes(tmp_path: pathlib.Path) -> None:

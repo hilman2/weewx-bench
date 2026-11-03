@@ -3,7 +3,7 @@
 #
 #    See the file LICENSE for your full rights.
 #
-"""Compare the files two installations wrote, and show the differences."""
+"""Compare the databases and files two installations wrote, and show the differences."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import difflib
 import json
 import pathlib
 import re
+import sqlite3
+import time
 
 # Values on the pages that change from one run to the next, even with the clock
 # frozen, because they come from the operating system.
@@ -119,3 +121,95 @@ def describe_differences(
             diff = diff[:MAX_DIFF_LINES] + ['... %d more lines\n' % (len(diff) - MAX_DIFF_LINES)]
         parts.append(''.join(line if line.endswith('\n') else line + '\n' for line in diff))
     return ''.join(parts)
+
+
+# Examples per column in a diff of two databases.
+MAX_EXAMPLES = 5
+
+
+def _tables(connection: sqlite3.Connection, schema: str) -> dict[str, list[tuple[str, int]]]:
+    """Return {table: [(column, position in the primary key)]} for one attached schema."""
+    tables = {}
+    for (name,) in connection.execute(
+        "SELECT name FROM %s.sqlite_master WHERE type = 'table'" % schema
+    ):
+        info = connection.execute('PRAGMA %s.table_info(%s)' % (schema, name)).fetchall()
+        tables[name] = [(row[1], row[5]) for row in info]
+    return tables
+
+
+def compare_databases(first: pathlib.Path, second: pathlib.Path) -> dict[str, dict[str, int]]:
+    """Return how many values differ between two WeeWX SQLite databases.
+
+    The result is {table: {column: rows}}. Rows that exist on one side only are
+    counted under '(only in first)' and '(only in second)', a table or column that
+    exists on one side only under '(missing)'. Tables without differences are left
+    out. Values are compared exactly, floats included.
+    """
+    result: dict[str, dict[str, int]] = {}
+    with sqlite3.connect('file:%s?mode=ro' % first, uri=True) as connection:
+        connection.execute("ATTACH DATABASE 'file:%s?mode=ro' AS other" % second)
+        mine = _tables(connection, 'main')
+        theirs = _tables(connection, 'other')
+        for table in sorted(set(mine) | set(theirs)):
+            if table not in mine or table not in theirs:
+                result[table] = {'(missing)': 1}
+                continue
+            differences: dict[str, int] = {}
+            columns = [column for column, _ in mine[table]]
+            other_columns = [column for column, _ in theirs[table]]
+            for column in sorted(set(columns) ^ set(other_columns)):
+                differences[column + ' (missing)'] = 1
+            keys = [column for column, position in mine[table] if position]
+            common = [c for c in columns if c in other_columns and c not in keys]
+            if keys:
+                join = ' AND '.join('a.%s = b.%s' % (key, key) for key in keys)
+                for label, left, right in (('first', 'main', 'other'), ('second', 'other', 'main')):
+                    (count,) = connection.execute(
+                        'SELECT COUNT(*) FROM %s.%s AS a WHERE NOT EXISTS '
+                        '(SELECT 1 FROM %s.%s AS b WHERE %s)' % (left, table, right, table, join)
+                    ).fetchone()
+                    if count:
+                        differences['(only in %s)' % label] = count
+                if common:
+                    sums = ', '.join('SUM(a.%s IS NOT b.%s)' % (c, c) for c in common)
+                    counts = connection.execute(
+                        'SELECT %s FROM main.%s AS a JOIN other.%s AS b ON %s'
+                        % (sums, table, table, join)
+                    ).fetchone()
+                    for column, count in zip(common, counts, strict=True):
+                        if count:
+                            differences[column] = count
+            if differences:
+                result[table] = differences
+    return result
+
+
+def describe_database_differences(
+    first: pathlib.Path,
+    second: pathlib.Path,
+    differences: dict[str, dict[str, int]],
+    labels: tuple[str, str],
+) -> str:
+    """Return the differences of compare_databases() as text, with a few examples each."""
+    lines = []
+    with sqlite3.connect('file:%s?mode=ro' % first, uri=True) as connection:
+        connection.execute("ATTACH DATABASE 'file:%s?mode=ro' AS other" % second)
+        tables = _tables(connection, 'main')
+        for table, columns in differences.items():
+            for column, count in columns.items():
+                lines.append('%s.%s: %d rows differ' % (table, column, count))
+                keys = [name for name, position in tables.get(table, []) if position]
+                if not keys or column.startswith('(') or column.endswith('(missing)'):
+                    continue
+                join = ' AND '.join('a.%s = b.%s' % (key, key) for key in keys)
+                rows = connection.execute(
+                    'SELECT a.%s, a.%s, b.%s FROM main.%s AS a JOIN other.%s AS b ON %s '
+                    'WHERE a.%s IS NOT b.%s ORDER BY 1 LIMIT %d'
+                    % (keys[0], column, column, table, table, join, column, column, MAX_EXAMPLES)
+                ).fetchall()
+                for key, old, new in rows:
+                    if keys[0] == 'dateTime':
+                        key = time.strftime('%Y-%m-%d %H:%M', time.gmtime(key))
+                    lines.append('    %s  %s: %r  %s: %r' % (key, labels[0], old, labels[1], new))
+    return '\n'.join(lines) + '\n' if lines else ''

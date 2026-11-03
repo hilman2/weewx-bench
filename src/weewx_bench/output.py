@@ -90,13 +90,11 @@ def format_table(result: dict[str, Any]) -> str:
     parameters = result['parameters']
     data_set = parameters['data_set']
     lines = [
-        'weewx-bench %s: %s, %s, %d days of %d-minute %s records'
+        'weewx-bench %s: %s, %d days of 5-minute %s records'
         % (
             result['weewx_bench'],
-            ', '.join(parameters['reports']),
             _backend(parameters),
             data_set['days'],
-            data_set['interval'] // 60,
             data_set['profile'],
         ),
         _machine(result),
@@ -107,50 +105,56 @@ def format_table(result: dict[str, Any]) -> str:
 
     rows = [
         [
+            'Report',
             'Version',
             'Wall time',
             'Change',
             'Min-max',
             'Generators',
+            'Change',
             'CPU',
             'Memory',
             'SELECT',
             'Statements',
         ]
     ]
-    baseline = result['versions'][0]
-    for version in result['versions']:
-        summary = version['summary']
-        statements = version['reference']['statements']
-        rows.append(
-            [
-                _name(version),
-                '%.2f s' % summary['wall_median'],
-                _change(summary['wall_median'], baseline['summary']['wall_median']),
-                '%.2f-%.2f' % (summary['wall_min'], summary['wall_max']),
-                '%.2f s' % summary['generators_median'],
-                '%.2f s' % summary['cpu_median'],
-                '%d MB' % (summary['max_rss_kib_median'] / 1024),
-                str(statements.get('SELECT', 0)),
-                str(sum(statements.values())),
-            ]
-        )
+    notes = []
+    for report in result['reports']:
+        baseline = report['versions'][0]
+        for version in report['versions']:
+            summary = version['summary']
+            statements = version['reference']['statements']
+            rows.append(
+                [
+                    report['report'] if version is baseline else '',
+                    _name(version),
+                    '%.2f s' % summary['wall_median'],
+                    _change(summary['wall_median'], baseline['summary']['wall_median']),
+                    '%.2f-%.2f' % (summary['wall_min'], summary['wall_max']),
+                    '%.2f s' % summary['generators_median'],
+                    _change(summary['generators_median'], baseline['summary']['generators_median']),
+                    '%.2f s' % summary['cpu_median'],
+                    '%d MB' % (summary['max_rss_kib_median'] / 1024),
+                    str(statements.get('SELECT', 0)),
+                    str(sum(statements.values())),
+                ]
+            )
+            differing = version['differing_files']
+            if differing:
+                shown = ', '.join(differing[:5]) + (', ...' if len(differing) > 5 else '')
+                notes.append(
+                    '%s, %s: %d files differ from %s: %s'
+                    % (report['report'], _name(version), len(differing), _name(baseline), shown)
+                )
     lines += _columns(rows)
-
     lines.append('')
-    for version in result['versions'][1:]:
-        differing = version['differing_files']
-        if differing:
-            shown = ', '.join(differing[:5]) + (', ...' if len(differing) > 5 else '')
-            lines.append(
-                'Output of %s: %d files differ from %s: %s'
-                % (_name(version), len(differing), _name(baseline), shown)
-            )
-        else:
-            lines.append(
-                'Output of %s: identical to %s, apart from the version number.'
-                % (_name(version), _name(baseline))
-            )
+    if notes:
+        lines += notes
+    else:
+        lines.append(
+            'Every version wrote the same files as %s, apart from the version number.'
+            % _name(result['versions'][0])
+        )
 
     lines += [
         '',
@@ -168,22 +172,39 @@ def format_check(result: dict[str, Any]) -> str:
     profiles = result['profiles']
     days = next(iter(profiles.values()))['data_set']['days']
     lines = [
-        'weewx-bench %s check: %s, %s, %d days of 5-minute records'
-        % (result['weewx_bench'], ', '.join(parameters['reports']), _backend(parameters), days),
+        'weewx-bench %s check: %d days of 5-minute records through the drivers, %s'
+        % (result['weewx_bench'], days, _backend(parameters)),
         _machine(result),
-        'Clock frozen at 30-Jun-2026 12:01 UTC. %s' % _skins(parameters),
+        'Reports: %s. Clock frozen at 30-Jun-2026 12:01 UTC. %s'
+        % (', '.join(parameters['reports']), _skins(parameters)),
         '',
     ]
-    rows = [['Station', 'Version', 'Files', 'Differ', 'New errors', 'SELECT', 'Statements']]
+    rows = [
+        [
+            'Station',
+            'Version',
+            'Read in',
+            'DB differ',
+            'Files',
+            'Differ',
+            'New errors',
+            'SELECT',
+            'Statements',
+        ]
+    ]
     notes = []
     for profile, entry in profiles.items():
         for version in entry['versions']:
             statements = version['statements']
             baseline = version is entry['versions'][0]
+            ingest = version['ingest']
+            differences = version['database_differences']
             rows.append(
                 [
                     profile,
                     _name(version),
+                    ('%.0f s' % ingest['seconds']) + ('' if ingest['complete'] else ' INCOMPLETE'),
+                    '' if baseline else str(sum(len(c) for c in differences.values())),
                     str(version['files']),
                     '' if baseline else str(len(version['differing_files'])),
                     '' if baseline else str(len(version['new_errors'])),
@@ -191,31 +212,44 @@ def format_check(result: dict[str, Any]) -> str:
                     str(sum(statements.values())),
                 ]
             )
+            name = '%s, %s' % (profile, _name(version))
             if baseline and version['errors']:
                 notes.append(
-                    '%s, %s logged %d errors. Other versions are compared with them.'
-                    % (profile, _name(version), len(version['errors']))
+                    '%s logged %d errors. Other versions are compared with them.'
+                    % (name, len(version['errors']))
                 )
             if version['exit_code']:
-                notes.append(
-                    '%s, %s: weectl exited with code %d.'
-                    % (profile, _name(version), version['exit_code'])
-                )
+                notes.append('%s: weectl exited with code %d.' % (name, version['exit_code']))
+            columns = [
+                '%s.%s (%d)' % (table, column, count)
+                for table, counts in differences.items()
+                for column, count in counts.items()
+            ]
+            if columns:
+                shown = ', '.join(columns[:6]) + (', ...' if len(columns) > 6 else '')
+                notes.append('%s: database differs in %s' % (name, shown))
             for error in version.get('new_errors', [])[:3]:
-                notes.append('%s, %s: %s' % (profile, _name(version), error))
+                notes.append('%s: %s' % (name, error))
             if version.get('diff'):
-                notes.append('%s, %s: diff in %s' % (profile, _name(version), version['diff']))
-        if entry['unstable_files']:
+                notes.append('%s: diff in %s' % (name, version['diff']))
+        unstable = [
+            '%s.%s' % (table, column)
+            for table, counts in entry.get('unstable_columns', {}).items()
+            for column in counts
+        ] + entry['unstable_files']
+        if unstable:
             notes.append(
                 '%s: not compared, differ between two runs of the baseline: %s'
-                % (profile, ', '.join(entry['unstable_files']))
+                % (profile, ', '.join(unstable))
             )
     lines += _columns(rows)
     if notes:
         lines += [''] + notes
     lines += [
         '',
-        'Differ: files that are not the same as those of the first version, after',
+        'Read in: the time weewxd took to take in the data through the driver.',
+        'DB differ: columns of the database with values not the same as those of the',
+        'first version. Differ: files of the reports that are not the same, after',
         'replacing the version numbers and uptimes.',
         'New errors: log lines of level ERROR that the first version did not log.',
     ]

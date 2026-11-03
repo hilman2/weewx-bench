@@ -19,8 +19,16 @@ time.time(), datetime.datetime.now() and everything else that asks for the curre
 time. Skins put the current time into their pages, and without this, two runs of
 the same version would never write the same files.
 
-Both slow the process down or change what it measures, so a run with either one is
-never a timed run.
+WEEWX_BENCH_CLOCK is a unix epoch time. The clock starts at that time and runs on
+from there. weewxd primes its first archive period from the clock, and a gateway
+that pushes readings from two years ago needs it to start back then.
+
+WEEWX_BENCH_NOSYNC, if set, turns off the fsync of SQLite. While weewxd catches up
+on two years, it commits every archive record on its own, and the fsync of each
+commit takes most of the time. The data written is the same.
+
+All of these slow the process down or change what it measures, so a run with any of
+them is never a timed run.
 """
 
 from __future__ import annotations
@@ -71,13 +79,41 @@ def _trace(trace_path: str) -> None:
     atexit.register(write)
 
 
+def _nosync() -> None:
+    import sqlite3
+
+    original_connect = sqlite3.connect
+
+    def connect(*args, **kwargs):  # type: ignore[no-untyped-def]
+        connection = original_connect(*args, **kwargs)
+        connection.execute('PRAGMA synchronous = OFF')
+        return connection
+
+    sqlite3.connect = connect
+
+
 def _freeze(epoch: str) -> None:
     import time_machine
 
     time_machine.travel(float(epoch), tick=False).start()
 
 
+def _clock(epoch: str) -> None:
+    import time_machine
+
+    # weewxd waits for "sane time": the clock has to be later than its own file.
+    # weewx takes the time it compares with when it is imported, so it is imported
+    # while the clock is still right.
+    import weewx  # noqa: F401
+
+    time_machine.travel(float(epoch), tick=True).start()
+
+
 if os.environ.get('WEEWX_BENCH_TRACE'):
     _trace(os.environ['WEEWX_BENCH_TRACE'])
+if os.environ.get('WEEWX_BENCH_NOSYNC'):
+    _nosync()
 if os.environ.get('WEEWX_BENCH_FREEZE'):
     _freeze(os.environ['WEEWX_BENCH_FREEZE'])
+if os.environ.get('WEEWX_BENCH_CLOCK'):
+    _clock(os.environ['WEEWX_BENCH_CLOCK'])
