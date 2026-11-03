@@ -22,9 +22,16 @@ Output of 5.6.0b1: identical to 5.5.2, apart from the version number.
 
 ## Requirements
 
-- Linux or macOS
-- [uv](https://docs.astral.sh/uv/)
-- Docker, only to test with MariaDB
+- Linux or macOS. Windows does not work.
+- [uv](https://docs.astral.sh/uv/). It downloads a suitable Python by itself.
+- git
+- Access to PyPI, GitHub and weewx.com
+- Up to 500 MB of disk space, about half of it in `.bench`, the rest for uv's
+  cache and Python
+- To test with MariaDB: Docker with Compose, and the ports 8474, 33060 and
+  33061 on 127.0.0.1 must be free
+
+weewx-bench works with WeeWX 5.0 and later. Earlier versions have no `weectl`.
 
 ## Running it
 
@@ -36,15 +43,15 @@ uvx --from git+https://github.com/hilman2/weewx-bench weewx-bench run 5.5.2 5.6.
 
 The first version you name is the baseline. The others are compared with it.
 
-The first run takes a few minutes. It installs the versions, and it generates
-two years of archive records. Later runs reuse both. Everything goes into the
-directory `.bench`, and the result into `results`, both in the current
-directory.
+The first run takes about a minute. It installs the versions, and it
+generates two years of archive records. Later runs reuse both. Everything goes
+into the directory `.bench`, and the result into `results`, both in the
+current directory. To remove everything, delete these two directories.
 
 To print a result file again:
 
 ```
-weewx-bench show results/20261103-130000-sqlite.json
+uvx --from git+https://github.com/hilman2/weewx-bench weewx-bench show results/20261103-130000-sqlite.json
 ```
 
 ## Which versions you can name
@@ -75,7 +82,14 @@ uv run weewx-bench run 5.5.2 5.6.0b1 --backend mysql --latency-ms 2
 ```
 
 `--latency-ms` adds that many milliseconds to every answer from MariaDB.
-Without it, MariaDB is as close as it can be. When you are done:
+Without it, MariaDB is as close as it can be.
+
+With latency, a run takes much longer. WeeWX 5.5.2 sends about 26,000
+statements for the Seasons report, so 2 ms add almost a minute to each run.
+The example above takes about ten minutes. Use fewer `--runs` or `--days` for
+a first look.
+
+When you are done:
 
 ```
 docker compose down -v
