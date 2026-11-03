@@ -5,4 +5,4 @@
 #
 """Compare the report generation time of WeeWX versions on the same data."""
 
-__version__ = '0.1.0'
+__version__ = '0.2.0'

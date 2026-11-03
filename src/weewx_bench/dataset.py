@@ -23,6 +23,9 @@ import weewx_bench.installs
 # weeks, months and years.
 STOP_TS = 1782820800
 INTERVAL = 300
+# Part of the name of every data set. Increase it whenever generate.py would write
+# different values, so that a data set from an older weewx-bench is not reused.
+DATA_SET_VERSION = 2
 DAY = 86400
 
 # These match compose.yaml.
@@ -46,7 +49,7 @@ class DataSet:
 
     @property
     def name(self) -> str:
-        return 'weewx_bench_%dd' % self.days
+        return 'weewx_bench_v%d_%dd' % (DATA_SET_VERSION, self.days)
 
     def describe(self) -> dict[str, int]:
         return {

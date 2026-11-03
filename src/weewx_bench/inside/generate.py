@@ -104,7 +104,12 @@ def make_record(timestamp: int, interval: int) -> dict:
         'rxCheckPercent': min(100.0, 98.0 + 2.0 * wave(timestamp, 0.7 * DAY)),
         'consBatteryVoltage': 4.6 - 0.1 * (timestamp % (30 * DAY)) / (30 * DAY),
     }
-    return record
+    # math.sin() and friends may differ in the last bit between C libraries, e.g.
+    # glibc and macOS. Three decimals hide that, so the database is the same on every
+    # machine. That is also about the resolution a real station reports.
+    return {
+        key: round(value, 3) if isinstance(value, float) else value for key, value in record.items()
+    }
 
 
 def generate(start_ts: int, stop_ts: int, interval: int) -> Iterator[dict]:
